@@ -2,6 +2,9 @@
 #include <unistd.h>
 #include <cstring>
 #include <arpa/inet.h>
+#include <poll.h>
+#include <vector>
+#include <cstdio>
 
 /*
  * Initialise le socket a un etat invalide (-1)
@@ -52,11 +55,77 @@ void SocketServer::setupSocket()
 	std::cout << "[INFO] Server is listening on port " << port << std::endl;
 }
 
+
+
+void SocketServer::acceptConnections()
+{
+	std::vector<pollfd> fds;
+
+	pollfd server_pollfd = {server_fd, POLLIN, 0};
+	fds.push_back(server_pollfd);
+
+	while (1)
+	{
+		int ready = poll(fds.data(), fds.size(), -1);
+		if (ready < 0)
+		{
+			perror("poll");
+			break ;
+		}
+
+		for (size_t i = 0; i < fds.size(); ++i)
+		{
+			if (fds[i].fd == server_fd && (fds[i].revents & POLLIN))
+			{
+				sockaddr_in 	client_address;
+				socklen_t 		client_len = sizeof(client_address);
+				int 			client_fd = accept(server_fd, (struct sockaddr*)&client_address, &client_len);
+
+				if (client_fd < 0)
+				{
+					std::cerr << "[ERROR] Failed to accept connection." << std::endl;
+					continue ;
+				}
+				std::cout << "[INFO] new client connected: " << client_fd << std::endl;
+
+				pollfd client_pollfd = {client_fd, POLLIN, 0};
+				fds.push_back(client_pollfd);
+			}
+			else if (fds[i].revents & POLLIN)
+			{
+				char buffer[1024];
+				ssize_t bytes_read = recv(fds[i].fd, buffer, sizeof(buffer) - 1, 0);
+
+				if (bytes_read <= 0)
+				{
+					std::cout << "[INFO] Client disconnected: " << fds[i].fd << std::endl;
+					close(fds[i].fd);
+					fds.erase(fds.begin() + i);
+					--i;
+				}
+				else
+				{
+					buffer[bytes_read] = '\0';
+					std::cout << "[INFO] Received from client " << fds[i].fd << ": " << buffer << std::endl;
+
+					std::string response = "Server echo: " + std::string(buffer);
+					send(fds[i].fd, response.c_str(), response.length(), 0);
+				}
+			}
+		}
+	}
+	for (size_t i = 0; i < fds.size(); ++i)
+	{
+		close(fds[i].fd);
+	}
+}
+
 /*
  * Boucle en attendnt une connexion entrante
  * Puis si connexion, affiche l adresse ip + le port
  * Pour l'intsant, ferme la connexion (A MODIFIER, WIP)
 */
+/*
 void SocketServer::acceptConnections() 
 {
 	int 			client_fd;
@@ -77,6 +146,7 @@ void SocketServer::acceptConnections()
 		close(client_fd);
 	}
 }
+*/
 
 /*
  * Configure et initialise le socket
