@@ -1,9 +1,12 @@
 #include "SocketServer.hpp"
+#include "Client.hpp"
+#include "CommandHandler.hpp"
 #include <unistd.h>
 #include <cstring>
 #include <arpa/inet.h>
 #include <poll.h>
 #include <vector>
+#include <map>
 #include <cstdio>
 
 /*
@@ -45,6 +48,10 @@ void SocketServer::setupSocket()
 	
 	if (server_fd == -1)
 		throw std::runtime_error("Failed to create socket");
+
+	int opt = 1;
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+		throw std::runtime_error("Failed to set socket options.");
 	
 	if (bind(server_fd, (struct sockaddr*)&address, sizeof (address)) < 0)
 		throw std::runtime_error("Failed to bind socket");
@@ -56,10 +63,11 @@ void SocketServer::setupSocket()
 }
 
 
-
+/*
 void SocketServer::acceptConnections()
 {
 	std::vector<pollfd> fds;
+	std::map<int, Client> clients;
 
 	pollfd server_pollfd = {server_fd, POLLIN, 0};
 	fds.push_back(server_pollfd);
@@ -88,6 +96,7 @@ void SocketServer::acceptConnections()
 				}
 				std::cout << "[INFO] new client connected: " << client_fd << std::endl;
 
+				clients[client_fd] = Client(client_fd);
 				pollfd client_pollfd = {client_fd, POLLIN, 0};
 				fds.push_back(client_pollfd);
 			}
@@ -100,16 +109,19 @@ void SocketServer::acceptConnections()
 				{
 					std::cout << "[INFO] Client disconnected: " << fds[i].fd << std::endl;
 					close(fds[i].fd);
+					clients.erase(fds[i].fd);
 					fds.erase(fds.begin() + i);
 					--i;
 				}
 				else
 				{
 					buffer[bytes_read] = '\0';
-					std::cout << "[INFO] Received from client " << fds[i].fd << ": " << buffer << std::endl;
+					std::string message(buffer);
+					std::cout << "[INFO] Received from client " << fds[i].fd << ": " << message << std::endl;
 
-					std::string response = "Server echo: " + std::string(buffer);
-					send(fds[i].fd, response.c_str(), response.length(), 0);
+					CommandHandler::handleCommand(clients[fds[i].fd], message);
+//					std::string response = "Server echo: " + std::string(buffer);
+//					send(fds[i].fd, response.c_str(), response.length(), 0);
 				}
 			}
 		}
@@ -118,6 +130,93 @@ void SocketServer::acceptConnections()
 	{
 		close(fds[i].fd);
 	}
+}
+*/
+
+void SocketServer::acceptConnections()
+{
+	std::vector<pollfd> fds;
+	std::map<int, Client> clients;
+	std::map<std::string, std::vector<Client*> > channels; // Ajouter la gestion des canaux
+
+	pollfd server_pollfd = {server_fd, POLLIN, 0};
+	fds.push_back(server_pollfd);
+
+	while (1)
+	{
+		int ready = poll(fds.data(), fds.size(), -1);
+		if (ready < 0)
+		{
+			perror("poll");
+			break ;
+		}
+
+		for (size_t i = 0; i < fds.size(); ++i)
+		{
+			if (fds[i].fd == server_fd && (fds[i].revents & POLLIN))
+			{
+				sockaddr_in 	client_address;
+				socklen_t 		client_len = sizeof(client_address);
+				int 			client_fd = accept(server_fd, (struct sockaddr*)&client_address, &client_len);
+
+				if (client_fd < 0)
+				{
+					std::cerr << "[ERROR] Failed to accept connection." << std::endl;
+					continue ;
+				}
+				std::cout << "[INFO] New client connected: " << client_fd << std::endl;
+
+				clients[client_fd] = Client(client_fd);
+				pollfd client_pollfd = {client_fd, POLLIN, 0};
+				fds.push_back(client_pollfd);
+			}
+			else if (fds[i].revents & POLLIN)
+			{
+				char buffer[1024];
+				ssize_t bytes_read = recv(fds[i].fd, buffer, sizeof(buffer) - 1, 0);
+
+				if (bytes_read <= 0)
+				{
+					std::cout << "[INFO] Client disconnected: " << fds[i].fd << std::endl;
+					close(fds[i].fd);
+					clients.erase(fds[i].fd);
+					fds.erase(fds.begin() + i);
+					--i;
+				}
+				else
+				{
+					buffer[bytes_read] = '\0';
+					std::string message(buffer);
+					std::cout << "[INFO] Received from client " << fds[i].fd << ": " << message << std::endl;
+
+					// Passer la map des channels au gestionnaire de commandes
+					CommandHandler::handleCommand(clients[fds[i].fd], message, channels);
+				}
+			}
+		}
+	}
+	for (size_t i = 0; i < fds.size(); ++i)
+	{
+		close(fds[i].fd);
+	}
+}
+
+
+void SocketServer::broadcastToChannel(const std::string& channel, const std::string& message, Client* sender)
+{
+    if (channels.find(channel) == channels.end())
+	{    
+		return ; // Le canal n'existe pas
+	}
+
+	std::vector<Client*>& members = channels[channel];
+
+	for (std::vector<Client*>::iterator it = members.begin(); it != members.end(); ++it) 
+	{
+    	Client* member = *it;
+   		if (member != sender)
+        	send(member->fd, message.c_str(), message.length(), 0);
+    }
 }
 
 /*
